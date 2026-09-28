@@ -77,6 +77,8 @@ export const CalendarModule: React.FC<CalendarModuleProps> = ({
     }
   })
   const [isFetchingWebCal, setIsFetchingWebCal] = useState(false)
+  const [webCalError, setWebCalError] = useState<string | null>(null)
+  const [webCalSuccess, setWebCalSuccess] = useState<string | null>(null)
   const [showConflictDetails, setShowConflictDetails] = useState(false)
 
   // Filter events by course
@@ -94,32 +96,74 @@ export const CalendarModule: React.FC<CalendarModuleProps> = ({
     const target = urlOverride || webCalUrl
     if (!target.trim()) return
     setIsFetchingWebCal(true)
+    setWebCalError(null)
+    setWebCalSuccess(null)
+
     try {
       let fetchUrl = target.trim()
       if (fetchUrl.startsWith('webcal://')) {
         fetchUrl = 'https://' + fetchUrl.substring(9)
       }
-      const res = await fetch(fetchUrl)
-      if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`)
-      const text = await res.text()
+
+      let text = ''
+      let usedProxy = false
+
+      // Attempt 1: Direct browser fetch
+      try {
+        const res = await fetch(fetchUrl)
+        if (res.ok) {
+          text = await res.text()
+        }
+      } catch {
+        // Direct fetch blocked by CORS; proceed to fallback proxy
+      }
+
+      // Attempt 2: CORS proxy fallback
+      if (!text) {
+        try {
+          const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(fetchUrl)}`
+          const proxyRes = await fetch(proxyUrl)
+          if (proxyRes.ok) {
+            text = await proxyRes.text()
+            usedProxy = true
+          }
+        } catch {
+          // Proxy also blocked or unreachable
+        }
+      }
+
+      if (!text || !text.includes('BEGIN:VCALENDAR')) {
+        throw new Error(
+          'University LMS CORS restriction: Your LMS portal blocks cross-origin web requests from external sites.'
+        )
+      }
+
       const parsed = parseICS(text)
       if (parsed.length === 0) {
-        alert('No calendar events found at this URL feed.')
+        setWebCalError('No calendar events (VEVENT) found in this URL feed.')
         return
       }
+
       const existing = new Set(calendarEvents.map((e) => `${e.title}_${e.startDate}`))
       const toAdd = parsed.filter((e) => !existing.has(`${e.title}_${e.startDate}`))
       onUpdateCalendarEvents([...calendarEvents, ...toAdd])
+
       try {
         localStorage.setItem('student_dashboard_webcal_url', target)
       } catch {
         // ignore
       }
-      setIsWebCalModalOpen(false)
-      alert(`Synchronized! Added ${toAdd.length} new events from WebCal feed.`)
-    } catch (err: any) {
-      alert(
-        `WebCal notice: ${err.message}. If CORS blocks direct browser access to your university LMS, you can download the .ics file and use "Import .ics" directly.`
+
+      setWebCalSuccess(
+        `Synchronized! Added ${toAdd.length} new events${usedProxy ? ' (via CORS bridge)' : ''}.`
+      )
+      setTimeout(() => {
+        setIsWebCalModalOpen(false)
+        setWebCalSuccess(null)
+      }, 1500)
+    } catch {
+      setWebCalError(
+        'Your university LMS (Canvas/Blackboard) blocks in-browser cross-origin requests (CORS). Download the .ics file from Canvas/Google Calendar and use "Upload .ics File" below.'
       )
     } finally {
       setIsFetchingWebCal(false)
@@ -840,26 +884,78 @@ export const CalendarModule: React.FC<CalendarModuleProps> = ({
               <input
                 type="url"
                 value={webCalUrl}
-                onChange={(e) => setWebCalUrl(e.target.value)}
+                onChange={(e) => {
+                  setWebCalUrl(e.target.value)
+                  setWebCalError(null)
+                }}
                 placeholder="https://canvas.instructure.com/feeds/calendars/user_xyz.ics"
                 className="w-full px-3 py-2 rounded-xl bg-[#131716] border border-[#2D3834] text-xs text-[#E0E6E4] font-mono focus:border-[#5B8266] focus:outline-none"
               />
             </div>
-            <div className="flex items-center justify-end gap-2 pt-2 border-t border-[#2D3834]">
+
+            {/* Error Notification with Direct 1-Click Upload */}
+            {webCalError && (
+              <div className="p-3 rounded-xl bg-[#261E1A] border border-[#997A5B]/40 text-xs text-[#E0E6E4] space-y-2.5">
+                <div className="flex items-start gap-2">
+                  <AlertTriangle className="w-4 h-4 text-[#997A5B] shrink-0 mt-0.5" />
+                  <div className="text-[11px] leading-relaxed text-[#D9C3B0]">
+                    {webCalError}
+                  </div>
+                </div>
+                <div className="pt-1 flex items-center justify-end">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsWebCalModalOpen(false)
+                      fileInputRef.current?.click()
+                    }}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#997A5B]/20 hover:bg-[#997A5B]/30 border border-[#997A5B]/50 text-xs text-[#D9C3B0] font-medium transition-colors"
+                  >
+                    <Upload className="w-3.5 h-3.5 text-[#997A5B]" />
+                    <span>Upload Downloaded .ics File</span>
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Success Notification */}
+            {webCalSuccess && (
+              <div className="p-3 rounded-xl bg-[#18261F] border border-[#5B9975]/30 text-xs text-[#5B9975] flex items-center gap-2">
+                <Check className="w-4 h-4 shrink-0" />
+                <span>{webCalSuccess}</span>
+              </div>
+            )}
+
+            <div className="flex items-center justify-between gap-2 pt-2 border-t border-[#2D3834]">
               <button
-                onClick={() => setIsWebCalModalOpen(false)}
-                className="px-3 py-1.5 rounded-lg border border-[#2D3834] text-xs text-[#8C9E96] hover:text-[#E0E6E4] transition-colors"
+                type="button"
+                onClick={() => {
+                  setIsWebCalModalOpen(false)
+                  fileInputRef.current?.click()
+                }}
+                className="text-xs text-[#8C9E96] hover:text-[#E0E6E4] flex items-center gap-1"
+                title="Select .ics file from your hard drive"
               >
-                Cancel
+                <Upload className="w-3 h-3" />
+                <span>Import local file</span>
               </button>
-              <button
-                onClick={() => handleSyncWebCal()}
-                disabled={isFetchingWebCal || !webCalUrl.trim()}
-                className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg bg-[#5B8266] hover:bg-[#6E997B] text-xs font-semibold text-[#E0E6E4] disabled:opacity-50 transition-colors"
-              >
-                {isFetchingWebCal && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
-                <span>{isFetchingWebCal ? 'Syncing...' : 'Save & Sync'}</span>
-              </button>
+
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setIsWebCalModalOpen(false)}
+                  className="px-3 py-1.5 rounded-lg border border-[#2D3834] text-xs text-[#8C9E96] hover:text-[#E0E6E4] transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => handleSyncWebCal()}
+                  disabled={isFetchingWebCal || !webCalUrl.trim()}
+                  className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg bg-[#5B8266] hover:bg-[#6E997B] text-xs font-semibold text-[#E0E6E4] disabled:opacity-50 transition-colors"
+                >
+                  {isFetchingWebCal && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
+                  <span>{isFetchingWebCal ? 'Syncing...' : 'Save & Sync'}</span>
+                </button>
+              </div>
             </div>
           </div>
         </div>
