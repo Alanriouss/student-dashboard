@@ -1,0 +1,52 @@
+@import "tailwindcss";
+
+@theme {
+  --color-pine-canvas: #131716;
+  --color-pine-surface: #1B2220;
+  --color-pine-surface-hover: #232C2A;
+  --color-pine-card: #171E1C;
+  --color-pine-primary: #5B8266;
+  --color-pine-primary-hover: #6E997B;
+  --color-pine-secondary: #648381;
+  --color-pine-border: #2D3834;
+  --color-pine-border-light: #3A4742;
+  --color-pine-text: #E0E6E4;
+  --color-pine-subtext: #8C9E96;
+  --color-pine-ochre: #997A5B;
+  --color-pine-ochre-glow: rgba(153, 122, 91, 0.25);
+  --color-pine-danger: #A36262;
+  --color-pine-success: #5B9975;
+
+  --font-sans: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+:root {
+  color-scheme: dark;
+  scrollbar-color: #2D3834 #131716;
+  scrollbar-width: thin;
+}
+
+@supports not (scrollbar-color: auto) {
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-track {
+    background: #131716;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #2D3834;
+    border-radius: 4px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #3A4742;
+  }
+}
+
+body {
+  margin: 0;
+  background-color: var(--color-pine-canvas);
+  color: var(--color-pine-text);
+  font-family: var(--font-sans);
+}
