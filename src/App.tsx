@@ -174,6 +174,7 @@ export default function App() {
             projects={appData.projects}
             quickLinks={appData.quickLinks}
             onUpdateQuickLinks={handleUpdateQuickLinks}
+            onUpdateProjects={handleUpdateProjects}
           />
         )}
       </main>

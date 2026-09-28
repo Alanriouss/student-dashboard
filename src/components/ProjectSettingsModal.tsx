@@ -1,5 +1,6 @@
 import React, { useState } from 'react'
 import type { Project } from '../types'
+import { cleanGitHubRepo } from '../services/githubService'
 import { X, GitBranch, Settings, Plus, Trash2 } from 'lucide-react'
 
 interface ProjectSettingsModalProps {
@@ -46,7 +47,7 @@ export const ProjectSettingsModal: React.FC<ProjectSettingsModalProps> = ({
       id: `p-${Date.now()}`,
       name: newProjectName.trim(),
       courseCode: newCourseCode.trim().toUpperCase() || 'DS200',
-      githubRepo: newGithubRepo.trim() || 'facebook/react',
+      githubRepo: cleanGitHubRepo(newGithubRepo) || 'facebook/react',
       description: 'Project deliverable stream',
     }
 
@@ -57,7 +58,11 @@ export const ProjectSettingsModal: React.FC<ProjectSettingsModalProps> = ({
   }
 
   const handleSaveAll = () => {
-    onUpdateProjects(projectList)
+    const cleaned = projectList.map((p) => ({
+      ...p,
+      githubRepo: cleanGitHubRepo(p.githubRepo),
+    }))
+    onUpdateProjects(cleaned)
     onClose()
   }
 

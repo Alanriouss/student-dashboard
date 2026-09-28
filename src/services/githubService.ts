@@ -7,8 +7,16 @@ interface CacheEntry {
   timestamp: number
 }
 
+export function cleanGitHubRepo(input: string): string {
+  return input
+    .trim()
+    .replace(/^https?:\/\/github\.com\//i, '')
+    .replace(/\.git$/i, '')
+    .replace(/^\/+|\/+$/g, '')
+}
+
 export async function fetchGitHubRepoData(repoFullName: string, forceRefresh = false): Promise<GitHubRepoInfo> {
-  const cleanRepo = repoFullName.trim()
+  const cleanRepo = cleanGitHubRepo(repoFullName)
   if (!cleanRepo || !cleanRepo.includes('/')) {
     return {
       repoName: cleanRepo || 'Not configured',

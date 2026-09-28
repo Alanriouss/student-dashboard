@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react'
 import type { Project, QuickLink, GitHubRepoInfo } from '../types'
-import { fetchGitHubRepoData } from '../services/githubService'
+import { fetchGitHubRepoData, cleanGitHubRepo } from '../services/githubService'
 import { QuickLinkFormModal } from './QuickLinkFormModal'
+import { ProjectSettingsModal } from './ProjectSettingsModal'
 import {
   GitBranch,
   GitCommit,
@@ -15,24 +16,32 @@ import {
   Calendar,
   Layers,
   Clock,
+  Check,
+  X,
+  Settings,
 } from 'lucide-react'
 
 interface IntegrationsModuleProps {
   projects: Project[]
   quickLinks: QuickLink[]
   onUpdateQuickLinks: (links: QuickLink[]) => void
+  onUpdateProjects?: (projects: Project[]) => void
 }
 
 export const IntegrationsModule: React.FC<IntegrationsModuleProps> = ({
   projects,
   quickLinks,
   onUpdateQuickLinks,
+  onUpdateProjects,
 }) => {
   const [selectedProjectId, setSelectedProjectId] = useState<string>(projects[0]?.id ?? '')
   const [repoInfo, setRepoInfo] = useState<GitHubRepoInfo | null>(null)
   const [isLoading, setIsLoading] = useState<boolean>(false)
   const [linkToEdit, setLinkToEdit] = useState<QuickLink | null>(null)
   const [isAddLinkOpen, setIsAddLinkOpen] = useState(false)
+  const [isEditingRepo, setIsEditingRepo] = useState(false)
+  const [repoInput, setRepoInput] = useState('')
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false)
 
   const activeProject = projects.find((p) => p.id === selectedProjectId) ?? projects[0]
 
@@ -45,6 +54,25 @@ export const IntegrationsModule: React.FC<IntegrationsModuleProps> = ({
     } finally {
       setIsLoading(false)
     }
+  }
+
+  const handleStartEditRepo = () => {
+    setRepoInput(activeProject?.githubRepo || '')
+    setIsEditingRepo(true)
+  }
+
+  const handleSaveRepo = () => {
+    if (!activeProject || !onUpdateProjects) return
+    const cleaned = cleanGitHubRepo(repoInput)
+    if (!cleaned) {
+      alert('Please enter a valid GitHub repository (e.g. "owner/repo" or GitHub URL).')
+      return
+    }
+    const updated = projects.map((p) =>
+      p.id === activeProject.id ? { ...p, githubRepo: cleaned } : p
+    )
+    onUpdateProjects(updated)
+    setIsEditingRepo(false)
   }
 
   useEffect(() => {
@@ -137,6 +165,16 @@ export const IntegrationsModule: React.FC<IntegrationsModuleProps> = ({
               </div>
 
               <div className="flex items-center gap-2 self-start sm:self-auto">
+                {onUpdateProjects && (
+                  <button
+                    onClick={() => setIsSettingsOpen(true)}
+                    title="Manage Projects & Repositories"
+                    className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-[#2D3834] hover:border-[#3A4742] bg-[#131716] text-xs text-[#8C9E96] hover:text-[#E0E6E4] transition-colors"
+                  >
+                    <Settings className="w-3.5 h-3.5 text-[#5B8266]" />
+                    <span className="hidden sm:inline">Settings</span>
+                  </button>
+                )}
                 <button
                   onClick={handleRefresh}
                   disabled={isLoading}
@@ -168,10 +206,62 @@ export const IntegrationsModule: React.FC<IntegrationsModuleProps> = ({
             {/* Repo Status Summary */}
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 my-4">
               <div className="p-3 rounded-xl bg-[#131716] border border-[#2D3834]">
-                <div className="text-[10px] text-[#8C9E96] uppercase tracking-wider font-mono">Repository</div>
-                <div className="text-xs font-mono font-medium text-[#E0E6E4] truncate mt-1">
-                  {activeProject?.githubRepo || 'None'}
+                <div className="flex items-center justify-between">
+                  <div className="text-[10px] text-[#8C9E96] uppercase tracking-wider font-mono">Repository</div>
+                  {onUpdateProjects && !isEditingRepo && (
+                    <button
+                      onClick={handleStartEditRepo}
+                      className="text-[#8C9E96] hover:text-[#5B8266] p-0.5 rounded transition-colors"
+                      title="Edit repository (owner/repo)"
+                    >
+                      <Edit2 className="w-3 h-3" />
+                    </button>
+                  )}
                 </div>
+
+                {isEditingRepo ? (
+                  <form
+                    onSubmit={(e) => {
+                      e.preventDefault()
+                      handleSaveRepo()
+                    }}
+                    className="flex items-center gap-1.5 mt-1"
+                  >
+                    <input
+                      type="text"
+                      value={repoInput}
+                      onChange={(e) => setRepoInput(e.target.value)}
+                      placeholder="owner/repo or GitHub link"
+                      autoFocus
+                      className="w-full px-2 py-0.5 rounded bg-[#1B2220] border border-[#5B8266] text-xs font-mono text-[#E0E6E4] outline-none"
+                    />
+                    <button
+                      type="submit"
+                      className="p-1 rounded bg-[#5B8266] text-white hover:bg-[#6E997B] transition-colors shrink-0"
+                      title="Save repository"
+                    >
+                      <Check className="w-3 h-3" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setIsEditingRepo(false)}
+                      className="p-1 rounded bg-[#2D3834] text-[#8C9E96] hover:text-[#E0E6E4] transition-colors shrink-0"
+                      title="Cancel"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </form>
+                ) : (
+                  <div
+                    onClick={onUpdateProjects ? handleStartEditRepo : undefined}
+                    className={`text-xs font-mono font-medium text-[#E0E6E4] truncate mt-1 ${
+                      onUpdateProjects ? 'cursor-pointer hover:text-[#5B8266]' : ''
+                    }`}
+                    title={onUpdateProjects ? 'Click to edit repository' : undefined}
+                  >
+                    {activeProject?.githubRepo || 'None'}
+                  </div>
+                )}
               </div>
 
               <div className="p-3 rounded-xl bg-[#131716] border border-[#2D3834]">
@@ -351,6 +441,16 @@ export const IntegrationsModule: React.FC<IntegrationsModuleProps> = ({
             setLinkToEdit(null)
           }}
           onSave={handleSaveLink}
+        />
+      )}
+
+      {/* Project & Repository Settings Modal */}
+      {isSettingsOpen && onUpdateProjects && (
+        <ProjectSettingsModal
+          projects={projects}
+          isOpen={true}
+          onClose={() => setIsSettingsOpen(false)}
+          onUpdateProjects={onUpdateProjects}
         />
       )}
     </section>
