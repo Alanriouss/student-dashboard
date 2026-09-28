@@ -22,6 +22,7 @@ interface BufferTableModuleProps {
   deliverables: Deliverable[]
   projects: Project[]
   currentUser: string
+  cloudSyncConfig?: import('../types').CloudSyncConfig
   onUpdateDeliverables: (deliverables: Deliverable[]) => void
   onUpdateProjects: (projects: Project[]) => void
 }
@@ -32,6 +33,7 @@ export const BufferTableModule: React.FC<BufferTableModuleProps> = ({
   deliverables,
   projects,
   currentUser,
+  cloudSyncConfig,
   onUpdateDeliverables,
   onUpdateProjects,
 }) => {
@@ -106,7 +108,10 @@ export const BufferTableModule: React.FC<BufferTableModuleProps> = ({
   }
 
   const handleCopyShareLink = (projectId: string) => {
-    const shareUrl = `${window.location.origin}${window.location.pathname}#/project/${projectId}/view`
+    let shareUrl = `${window.location.origin}${window.location.pathname}#/project/${projectId}/view`
+    if (cloudSyncConfig?.enabled && cloudSyncConfig?.endpointUrl) {
+      shareUrl += `?sync=${encodeURIComponent(cloudSyncConfig.endpointUrl)}`
+    }
     navigator.clipboard.writeText(shareUrl).then(() => {
       setCopiedProjectId(projectId)
       setTimeout(() => setCopiedProjectId(null), 3000)

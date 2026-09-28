@@ -150,6 +150,7 @@ export default function App() {
             deliverables={appData.deliverables}
             projects={appData.projects}
             currentUser={appData.currentUser}
+            cloudSyncConfig={appData.cloudSync}
             onUpdateDeliverables={handleUpdateDeliverables}
             onUpdateProjects={handleUpdateProjects}
           />

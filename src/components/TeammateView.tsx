@@ -1,7 +1,18 @@
-import React from 'react'
-import type { AppData } from '../types'
+import React, { useState, useEffect, useCallback } from 'react'
+import type { AppData, Deliverable } from '../types'
 import { getBufferUrgency, formatDateShort, formatDateDayOnly } from '../utils/bufferEngine'
-import { Users, Shield, ExternalLink, AlertTriangle, ArrowLeft, GitBranch, CheckCircle2 } from 'lucide-react'
+import { fetchRemoteSnapshot } from '../services/cloudSyncService'
+import {
+  Users,
+  Shield,
+  ExternalLink,
+  AlertTriangle,
+  ArrowLeft,
+  GitBranch,
+  CheckCircle2,
+  RefreshCw,
+  Clock,
+} from 'lucide-react'
 
 interface TeammateViewProps {
   projectId: string
@@ -11,17 +22,113 @@ interface TeammateViewProps {
 
 export const TeammateView: React.FC<TeammateViewProps> = ({ projectId, appData, onBackToAdmin }) => {
   const project = appData.projects.find((p) => p.id === projectId) ?? appData.projects[0]
-  const projectDeliverables = appData.deliverables.filter((d) => d.projectId === project?.id)
+  const [deliverables, setDeliverables] = useState<Deliverable[]>(() =>
+    appData.deliverables.filter((d) => d.projectId === project?.id)
+  )
+  const [isSyncing, setIsSyncing] = useState(false)
+  const [syncStatus, setSyncStatus] = useState<string>('Local Cache')
+  const [lastSyncTime, setLastSyncTime] = useState<string | null>(null)
 
-  const approvedCount = projectDeliverables.filter((d) => d.status === 'APPROVED').length
-  const totalCount = projectDeliverables.length
+  // Extract ?sync= endpoint from URL hash or query if present
+  const getEndpoint = useCallback((): string | null => {
+    try {
+      const hashParts = window.location.hash.split('?')
+      if (hashParts[1]) {
+        const hashParams = new URLSearchParams(hashParts[1])
+        const syncUrl = hashParams.get('sync')
+        if (syncUrl) return decodeURIComponent(syncUrl)
+      }
+      const searchParams = new URLSearchParams(window.location.search)
+      const syncUrl = searchParams.get('sync')
+      if (syncUrl) return decodeURIComponent(syncUrl)
+    } catch {
+      // Ignore URL parsing errors
+    }
+    return appData.cloudSync?.enabled && appData.cloudSync.endpointUrl ? appData.cloudSync.endpointUrl : null
+  }, [appData.cloudSync])
+
+  const refreshFromRemote = useCallback(async () => {
+    const endpoint = getEndpoint()
+    if (!endpoint) return
+
+    setIsSyncing(true)
+    try {
+      const res = await fetchRemoteSnapshot({
+        enabled: true,
+        provider: 'google_sheets',
+        endpointUrl: endpoint,
+        workspaceId: appData.cloudSync?.workspaceId || 'default-workspace',
+      })
+
+      if (res.success && res.data?.deliverables) {
+        const allDeliverables = res.data.deliverables as Deliverable[]
+        const projectOnly = allDeliverables.filter((d) => d.projectId === project?.id)
+        if (projectOnly.length > 0) {
+          setDeliverables(projectOnly)
+          setSyncStatus('Live Google Sheets')
+          setLastSyncTime(new Date().toLocaleTimeString())
+        }
+      }
+    } catch {
+      setSyncStatus('Local Snapshot (Offline)')
+    } finally {
+      setIsSyncing(false)
+    }
+  }, [getEndpoint, project?.id, appData.cloudSync])
+
+  // Initial fetch on mount if sync endpoint exists
+  useEffect(() => {
+    let ignore = false
+    const endpoint = getEndpoint()
+    if (!endpoint) return
+
+    // Trigger async fetch without synchronous setState warning
+    const timer = setTimeout(() => {
+      setIsSyncing(true)
+      fetchRemoteSnapshot({
+        enabled: true,
+        provider: 'google_sheets',
+        endpointUrl: endpoint,
+        workspaceId: appData.cloudSync?.workspaceId || 'default-workspace',
+      })
+        .then((res) => {
+          if (!ignore && res.success && res.data?.deliverables) {
+            const allDeliverables = res.data.deliverables as Deliverable[]
+            const projectOnly = allDeliverables.filter((d) => d.projectId === project?.id)
+            if (projectOnly.length > 0) {
+              setDeliverables(projectOnly)
+              setSyncStatus('Live Google Sheets')
+              setLastSyncTime(new Date().toLocaleTimeString())
+            }
+          }
+        })
+        .catch(() => {
+          if (!ignore) {
+            setSyncStatus('Local Snapshot (Offline)')
+          }
+        })
+        .finally(() => {
+          if (!ignore) {
+            setIsSyncing(false)
+          }
+        })
+    }, 0)
+
+    return () => {
+      ignore = true
+      clearTimeout(timer)
+    }
+  }, [getEndpoint, project?.id, appData.cloudSync])
+
+  const approvedCount = deliverables.filter((d) => d.status === 'APPROVED').length
+  const totalCount = deliverables.length
   const progressPct = totalCount > 0 ? Math.round((approvedCount / totalCount) * 100) : 0
 
   return (
     <div className="min-h-screen bg-[#131716] text-[#E0E6E4] p-4 sm:p-6 lg:p-8">
       <div className="max-w-6xl mx-auto space-y-6">
         {/* Navigation / Switcher Bar */}
-        <div className="flex items-center justify-between pb-4 border-b border-[#2D3834]">
+        <div className="flex items-center justify-between pb-4 border-b border-[#2D3834] flex-wrap gap-2">
           <button
             onClick={onBackToAdmin}
             className="flex items-center gap-1.5 text-xs text-[#8C9E96] hover:text-[#E0E6E4] px-3 py-1.5 rounded-lg bg-[#1B2220] border border-[#2D3834] transition-colors"
@@ -30,9 +137,24 @@ export const TeammateView: React.FC<TeammateViewProps> = ({ projectId, appData, 
             <span>Return to Workspace Admin View</span>
           </button>
 
-          <div className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#1B2220] border border-[#2D3834] text-xs font-mono text-[#8C9E96]">
-            <Shield className="w-3.5 h-3.5 text-[#5B8266]" />
-            <span>Read-Only Collaborator Mode</span>
+          <div className="flex items-center gap-2">
+            {getEndpoint() && (
+              <button
+                onClick={refreshFromRemote}
+                disabled={isSyncing}
+                className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#1B2220] border border-[#2D3834] hover:border-[#3A4742] text-xs font-mono text-[#8C9E96] hover:text-[#E0E6E4] transition-colors disabled:opacity-50"
+                title="Fetch latest updates from Google Sheets"
+              >
+                <RefreshCw className={`w-3 h-3 ${isSyncing ? 'animate-spin text-[#5B8266]' : ''}`} />
+                <span>{isSyncing ? 'Syncing...' : 'Refresh'}</span>
+                {lastSyncTime && <span className="text-[10px] text-[#5B8266]">({lastSyncTime})</span>}
+              </button>
+            )}
+
+            <div className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#1B2220] border border-[#2D3834] text-xs font-mono text-[#8C9E96]">
+              <Shield className="w-3.5 h-3.5 text-[#5B8266]" />
+              <span>{syncStatus} &bull; Read-Only</span>
+            </div>
           </div>
         </div>
 
@@ -72,7 +194,9 @@ export const TeammateView: React.FC<TeammateViewProps> = ({ projectId, appData, 
           <div className="mt-5 pt-4 border-t border-[#2D3834] flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
             <div className="flex items-center gap-2">
               <CheckCircle2 className="w-4 h-4 text-[#5B9975]" />
-              <span>Project Deliverables Approved: <strong>{approvedCount}</strong> of <strong>{totalCount}</strong> ({progressPct}%)</span>
+              <span>
+                Project Deliverables Approved: <strong>{approvedCount}</strong> of <strong>{totalCount}</strong> ({progressPct}%)
+              </span>
             </div>
             <div className="w-full sm:w-64 bg-[#131716] h-2.5 rounded-full overflow-hidden border border-[#2D3834]">
               <div
@@ -90,7 +214,10 @@ export const TeammateView: React.FC<TeammateViewProps> = ({ projectId, appData, 
               <Users className="w-4 h-4 text-[#5B8266]" />
               <h3 className="text-sm font-semibold text-[#E0E6E4]">Milestone Buffer Schedule</h3>
             </div>
-            <span className="text-[11px] font-mono text-[#8C9E96]">Internal 72h Safety Deadlines</span>
+            <div className="flex items-center gap-2 text-[11px] font-mono text-[#8C9E96]">
+              <Clock className="w-3.5 h-3.5 text-[#B89674]" />
+              <span>Internal 72h Safety Deadlines</span>
+            </div>
           </div>
 
           <div className="overflow-x-auto">
@@ -108,14 +235,14 @@ export const TeammateView: React.FC<TeammateViewProps> = ({ projectId, appData, 
                 </tr>
               </thead>
               <tbody className="divide-y divide-[#2D3834]/60">
-                {projectDeliverables.length === 0 ? (
+                {deliverables.length === 0 ? (
                   <tr>
                     <td colSpan={8} className="py-8 text-center text-[#8C9E96] text-xs">
                       No deliverables active for this project board.
                     </td>
                   </tr>
                 ) : (
-                  projectDeliverables.map((del) => {
+                  deliverables.map((del) => {
                     const urgency = getBufferUrgency(del)
 
                     return (

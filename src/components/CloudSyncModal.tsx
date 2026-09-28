@@ -1,7 +1,21 @@
 import React, { useState } from 'react'
 import type { AppData, CloudSyncConfig } from '../types'
 import { testCloudConnection, syncWorkspaceToCloud, fetchRemoteSnapshot } from '../services/cloudSyncService'
-import { X, Cloud, Check, RefreshCw, Key, Globe, Shield, Sheet, ArrowDownRight } from 'lucide-react'
+import {
+  X,
+  Cloud,
+  Check,
+  RefreshCw,
+  Key,
+  Globe,
+  Shield,
+  Sheet,
+  ArrowDownRight,
+  Copy,
+  ExternalLink,
+  ChevronDown,
+  ChevronUp,
+} from 'lucide-react'
 
 interface CloudSyncModalProps {
   appData: AppData
@@ -11,6 +25,73 @@ interface CloudSyncModalProps {
   onSaveConfig: (config: CloudSyncConfig) => void
   onOpenDiffReview: (remoteData: Partial<AppData>, providerName: string) => void
 }
+
+const APPS_SCRIPT_TEMPLATE = `const SPREADSHEET_ID = SpreadsheetApp.getActiveSpreadsheet().getId();
+
+function doGet(e) {
+  try {
+    const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+    const data = {
+      courses: getRowsAsObjects(ss.getSheetByName("Courses")),
+      deliverables: getRowsAsObjects(ss.getSheetByName("Deliverables")),
+      calendarEvents: getRowsAsObjects(ss.getSheetByName("CalendarEvents")),
+      lastSynced: new Date().toISOString()
+    };
+    return ContentService.createTextOutput(JSON.stringify({ success: true, data, lastSynced: data.lastSynced }))
+      .setMimeType(ContentService.MimeType.JSON);
+  } catch (err) {
+    return ContentService.createTextOutput(JSON.stringify({ success: false, error: err.message }))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+function doPost(e) {
+  try {
+    const payload = JSON.parse(e.postData.contents);
+    const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+    if (payload.courses) writeObjectsToSheet(ss.getSheetByName("Courses"), payload.courses);
+    if (payload.deliverables) writeObjectsToSheet(ss.getSheetByName("Deliverables"), payload.deliverables);
+    if (payload.calendarEvents) writeObjectsToSheet(ss.getSheetByName("CalendarEvents"), payload.calendarEvents);
+    return ContentService.createTextOutput(JSON.stringify({ success: true, timestamp: new Date().toISOString() }))
+      .setMimeType(ContentService.MimeType.JSON);
+  } catch (err) {
+    return ContentService.createTextOutput(JSON.stringify({ success: false, error: err.message }))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+function getRowsAsObjects(sheet) {
+  if (!sheet) return [];
+  const lastRow = sheet.getLastRow();
+  const lastCol = sheet.getLastColumn();
+  if (lastRow <= 1 || lastCol < 1) return [];
+  const values = sheet.getRange(1, 1, lastRow, lastCol).getValues();
+  const headers = values[0].map(h => String(h).trim());
+  const rows = [];
+  for (let i = 1; i < values.length; i++) {
+    const row = {};
+    let hasData = false;
+    for (let j = 0; j < headers.length; j++) {
+      const val = values[i][j];
+      row[headers[j]] = val;
+      if (val !== "" && val !== null && val !== undefined) hasData = true;
+    }
+    if (hasData) rows.push(row);
+  }
+  return rows;
+}
+
+function writeObjectsToSheet(sheet, objects) {
+  if (!sheet) return;
+  const lastCol = sheet.getLastColumn();
+  if (lastCol < 1) return;
+  const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0].map(h => String(h).trim());
+  const lastRow = sheet.getLastRow();
+  if (lastRow > 1) sheet.getRange(2, 1, lastRow - 1, lastCol).clearContent();
+  if (!objects || objects.length === 0) return;
+  const dataRows = objects.map(obj => headers.map(header => (obj[header] !== undefined && obj[header] !== null ? obj[header] : "")));
+  sheet.getRange(2, 1, dataRows.length, headers.length).setValues(dataRows);
+}`
 
 export const CloudSyncModal: React.FC<CloudSyncModalProps> = ({
   appData,
@@ -27,6 +108,15 @@ export const CloudSyncModal: React.FC<CloudSyncModalProps> = ({
   const [apiKey, setApiKey] = useState(config.apiKey || '')
   const [workspaceId, setWorkspaceId] = useState(config.workspaceId || 'ds-fall2026-hub')
   const [enabled, setEnabled] = useState(config.enabled ?? false)
+  const [isCodeCopied, setIsCodeCopied] = useState(false)
+  const [showSetupGuide, setShowSetupGuide] = useState(false)
+
+  const handleCopyCode = () => {
+    navigator.clipboard.writeText(APPS_SCRIPT_TEMPLATE).then(() => {
+      setIsCodeCopied(true)
+      setTimeout(() => setIsCodeCopied(false), 3000)
+    })
+  }
 
   const [testingStatus, setTestingStatus] = useState<string | null>(null)
   const [isTesting, setIsTesting] = useState(false)
@@ -194,6 +284,72 @@ export const CloudSyncModal: React.FC<CloudSyncModalProps> = ({
               />
             </div>
           </div>
+
+          {/* Google Sheets Quick Setup Helper */}
+          {provider === 'google_sheets' && (
+            <div className="p-3.5 rounded-xl bg-[#1B2220] border border-[#2D3834] space-y-3">
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <div className="flex items-center gap-2">
+                  <Sheet className="w-4 h-4 text-[#5B8266]" />
+                  <span className="font-semibold text-[#E0E6E4]">Google Sheets Quick Setup</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <a
+                    href="https://sheets.new"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#131716] border border-[#2D3834] hover:border-[#3A4742] text-[11px] text-[#8C9E96] hover:text-[#E0E6E4] transition-colors"
+                  >
+                    <span>Create Sheet (sheets.new)</span>
+                    <ExternalLink className="w-3 h-3" />
+                  </a>
+                  <button
+                    type="button"
+                    onClick={handleCopyCode}
+                    className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#5B8266]/20 border border-[#5B8266]/40 text-[#5B9975] hover:bg-[#5B8266]/30 text-[11px] font-medium transition-colors"
+                  >
+                    {isCodeCopied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+                    <span>{isCodeCopied ? 'Code Copied!' : 'Copy Apps Script Code'}</span>
+                  </button>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setShowSetupGuide(!showSetupGuide)}
+                className="flex items-center justify-between w-full text-[11px] text-[#8C9E96] hover:text-[#E0E6E4] pt-1 border-t border-[#2D3834]/60"
+              >
+                <span>Setup Checklist (3 Tab Names & Web App Deployment)</span>
+                {showSetupGuide ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+              </button>
+
+              {showSetupGuide && (
+                <div className="text-[11px] space-y-2 pt-1 font-mono text-[#8C9E96] bg-[#131716] p-3 rounded-lg border border-[#2D3834]">
+                  <div>
+                    <strong className="text-[#E0E6E4]">Step 1:</strong> Create 3 sheets named exactly:
+                    <ul className="list-disc list-inside mt-1 text-[#B89674]">
+                      <li><code className="text-[#5B9975]">Courses</code></li>
+                      <li><code className="text-[#5B9975]">Deliverables</code></li>
+                      <li><code className="text-[#5B9975]">CalendarEvents</code></li>
+                    </ul>
+                  </div>
+                  <div>
+                    <strong className="text-[#E0E6E4]">Step 2:</strong> In Google Sheets, click <span className="text-[#E0E6E4]">Extensions &gt; Apps Script</span>, paste the code, and click Save.
+                  </div>
+                  <div>
+                    <strong className="text-[#E0E6E4]">Step 3:</strong> Click <span className="text-[#E0E6E4]">Deploy &gt; New deployment &gt; Web app</span>:
+                    <ul className="list-disc list-inside mt-0.5 text-[#B89674]">
+                      <li>Execute as: <span className="text-[#E0E6E4]">Me</span></li>
+                      <li>Who has access: <span className="text-[#5B9975] font-semibold">Anyone</span> (Crucial!)</li>
+                    </ul>
+                  </div>
+                  <div>
+                    <strong className="text-[#E0E6E4]">Step 4:</strong> Authorize access, copy the URL ending in <span className="text-[#5B9975]">/exec</span>, and paste below.
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Endpoint URL */}
           <div>
