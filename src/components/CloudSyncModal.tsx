@@ -26,38 +26,148 @@ interface CloudSyncModalProps {
   onOpenDiffReview: (remoteData: Partial<AppData>, providerName: string) => void
 }
 
-const APPS_SCRIPT_TEMPLATE = `const SPREADSHEET_ID = SpreadsheetApp.getActiveSpreadsheet().getId();
+const APPS_SCRIPT_TEMPLATE = `const DEFAULT_HEADERS = {
+  Courses: ["id", "code", "title", "credits", "semester", "weightInClass", "weightMidterm", "weightFinal", "scoreInClass", "scoreMidterm", "scoreFinal", "targetGrade"],
+  Deliverables: ["id", "projectId", "taskName", "milestonePhase", "ownerName", "internalBufferDeadline", "officialDueDate", "peerReviewer", "status", "artifactUrl"],
+  CalendarEvents: ["id", "title", "courseCode", "startDate", "endDate", "type", "location"]
+};
+
+function getSpreadsheet() {
+  try { return SpreadsheetApp.getActiveSpreadsheet(); }
+  catch (e) { return SpreadsheetApp.openById(SpreadsheetApp.getActiveSpreadsheet().getId()); }
+}
 
 function doGet(e) {
   try {
-    const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+    if (e && e.parameter && e.parameter.fetchFeed) {
+      const resp = UrlFetchApp.fetch(e.parameter.fetchFeed, { muteHttpExceptions: true });
+      return ContentService.createTextOutput(resp.getContentText()).setMimeType(ContentService.MimeType.TEXT);
+    }
+    const ss = getSpreadsheet();
+    let courses = getRowsAsObjects(ss.getSheetByName("Courses"));
+    let deliverables = getRowsAsObjects(ss.getSheetByName("Deliverables"));
+    let sheetEvents = getRowsAsObjects(ss.getSheetByName("CalendarEvents"));
+
+    let gcalEvents = [];
+    if (e && e.parameter && e.parameter.syncGCal === "true") {
+      gcalEvents = getGoogleCalendarEvents();
+    }
+
+    const eventMap = new Map();
+    sheetEvents.forEach(function(ev) {
+      eventMap.set((ev.title || "").trim().toLowerCase() + "_" + (ev.startDate || "").slice(0, 16), ev);
+    });
+    gcalEvents.forEach(function(ev) {
+      const key = (ev.title || "").trim().toLowerCase() + "_" + (ev.startDate || "").slice(0, 16);
+      if (!eventMap.has(key)) eventMap.set(key, ev);
+    });
+
     const data = {
-      courses: getRowsAsObjects(ss.getSheetByName("Courses")),
-      deliverables: getRowsAsObjects(ss.getSheetByName("Deliverables")),
-      calendarEvents: getRowsAsObjects(ss.getSheetByName("CalendarEvents")),
+      courses: courses,
+      deliverables: deliverables,
+      calendarEvents: Array.from(eventMap.values()),
       lastSynced: new Date().toISOString()
     };
-    return ContentService.createTextOutput(JSON.stringify({ success: true, data, lastSynced: data.lastSynced }))
-      .setMimeType(ContentService.MimeType.JSON);
+    return ContentService.createTextOutput(JSON.stringify({ success: true, data, lastSynced: data.lastSynced })).setMimeType(ContentService.MimeType.JSON);
   } catch (err) {
-    return ContentService.createTextOutput(JSON.stringify({ success: false, error: err.message }))
-      .setMimeType(ContentService.MimeType.JSON);
+    return ContentService.createTextOutput(JSON.stringify({ success: false, error: err.message })).setMimeType(ContentService.MimeType.JSON);
   }
 }
 
 function doPost(e) {
   try {
+    if (!e || !e.postData || !e.postData.contents) {
+      return ContentService.createTextOutput(JSON.stringify({ success: false, error: "Missing body" })).setMimeType(ContentService.MimeType.JSON);
+    }
     const payload = JSON.parse(e.postData.contents);
-    const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
-    if (payload.courses) writeObjectsToSheet(ss.getSheetByName("Courses"), payload.courses);
-    if (payload.deliverables) writeObjectsToSheet(ss.getSheetByName("Deliverables"), payload.deliverables);
-    if (payload.calendarEvents) writeObjectsToSheet(ss.getSheetByName("CalendarEvents"), payload.calendarEvents);
-    return ContentService.createTextOutput(JSON.stringify({ success: true, timestamp: new Date().toISOString() }))
-      .setMimeType(ContentService.MimeType.JSON);
+    const ss = getSpreadsheet();
+
+    if (payload.courses && Array.isArray(payload.courses)) {
+      writeObjectsToSheet(getOrCreateSheet(ss, "Courses", DEFAULT_HEADERS.Courses), payload.courses, DEFAULT_HEADERS.Courses);
+    }
+    if (payload.deliverables && Array.isArray(payload.deliverables)) {
+      writeObjectsToSheet(getOrCreateSheet(ss, "Deliverables", DEFAULT_HEADERS.Deliverables), payload.deliverables, DEFAULT_HEADERS.Deliverables);
+    }
+    if (payload.calendarEvents && Array.isArray(payload.calendarEvents)) {
+      writeObjectsToSheet(getOrCreateSheet(ss, "CalendarEvents", DEFAULT_HEADERS.CalendarEvents), payload.calendarEvents, DEFAULT_HEADERS.CalendarEvents);
+      if (payload.syncToGCal === true || payload.syncToGCal === undefined) {
+        syncEventsToGoogleCalendar(payload.calendarEvents);
+      }
+    }
+
+    const defaultSheet = ss.getSheetByName("Sheet1") || ss.getSheetByName("Trang tính 1");
+    if (defaultSheet && ss.getSheets().length > 1 && defaultSheet.getLastRow() === 0) {
+      try { ss.deleteSheet(defaultSheet); } catch (ignored) {}
+    }
+
+    return ContentService.createTextOutput(JSON.stringify({ success: true, timestamp: new Date().toISOString() })).setMimeType(ContentService.MimeType.JSON);
   } catch (err) {
-    return ContentService.createTextOutput(JSON.stringify({ success: false, error: err.message }))
-      .setMimeType(ContentService.MimeType.JSON);
+    return ContentService.createTextOutput(JSON.stringify({ success: false, error: err.toString() })).setMimeType(ContentService.MimeType.JSON);
   }
+}
+
+function getGoogleCalendarEvents() {
+  try {
+    const cal = CalendarApp.getDefaultCalendar();
+    if (!cal) return [];
+    const now = new Date();
+    const events = cal.getEvents(new Date(now.getTime() - 14 * 86400000), new Date(now.getTime() + 90 * 86400000));
+    return events.map(function(ev) {
+      const title = ev.getTitle() || "Untitled Event";
+      let type = "LECTURE";
+      const lower = title.toLowerCase();
+      if (lower.includes("exam") || lower.includes("thi") || lower.includes("midterm") || lower.includes("final")) type = "EXAM";
+      else if (lower.includes("assignment") || lower.includes("due") || lower.includes("bài tập")) type = "ASSIGNMENT";
+      const match = title.match(/\\b([A-Z]{2,4}\\s?\\d{3})\\b/i);
+      return {
+        id: "gcal-" + ev.getId(),
+        title: title,
+        courseCode: match ? match[1].replace(/\\s+/, "").toUpperCase() : "",
+        startDate: ev.getStartTime().toISOString(),
+        endDate: ev.getEndTime().toISOString(),
+        type: type,
+        location: ev.getLocation() || "",
+        description: ev.getDescription() || ""
+      };
+    });
+  } catch (err) { return []; }
+}
+
+function syncEventsToGoogleCalendar(calendarEvents) {
+  try {
+    const cal = CalendarApp.getDefaultCalendar();
+    if (!cal || !calendarEvents || !Array.isArray(calendarEvents)) return 0;
+    let count = 0;
+    calendarEvents.forEach(function(ev) {
+      if (!ev.title || !ev.startDate) return;
+      const start = new Date(ev.startDate);
+      const end = ev.endDate ? new Date(ev.endDate) : new Date(start.getTime() + 3600000);
+      if (isNaN(start.getTime()) || isNaN(end.getTime())) return;
+      if (ev.id && ev.id.indexOf("gcal-") === 0) {
+        try {
+          const ex = cal.getEventById(ev.id.substring(5));
+          if (ex) { ex.setTitle(ev.title); ex.setTime(start, end); if (ev.location) ex.setLocation(ev.location); count++; return; }
+        } catch(e) {}
+      }
+      const existing = cal.getEvents(new Date(start.getTime() - 60000), new Date(start.getTime() + 60000));
+      if (!existing.some(function(ex) { return ex.getTitle().trim().toLowerCase() === ev.title.trim().toLowerCase(); })) {
+        cal.createEvent(ev.title, start, end, { location: ev.location || "", description: "Synced from Student Hub" });
+        count++;
+      }
+    });
+    return count;
+  } catch (err) { return 0; }
+}
+
+function getOrCreateSheet(ss, sheetName, defaultHeaders) {
+  let sheet = ss.getSheetByName(sheetName);
+  if (!sheet) sheet = ss.insertSheet(sheetName);
+  if (sheet.getLastRow() === 0 || sheet.getLastColumn() === 0) {
+    sheet.getRange(1, 1, 1, defaultHeaders.length).setValues([defaultHeaders]);
+    sheet.getRange(1, 1, 1, defaultHeaders.length).setFontWeight("bold");
+    sheet.setFrozenRows(1);
+  }
+  return sheet;
 }
 
 function getRowsAsObjects(sheet) {
@@ -81,16 +191,27 @@ function getRowsAsObjects(sheet) {
   return rows;
 }
 
-function writeObjectsToSheet(sheet, objects) {
+function writeObjectsToSheet(sheet, objects, fallbackHeaders) {
   if (!sheet) return;
-  const lastCol = sheet.getLastColumn();
-  if (lastCol < 1) return;
-  const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0].map(h => String(h).trim());
+  let lastCol = sheet.getLastColumn();
+  let headers = [];
+  if (lastCol > 0) {
+    headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0].map(h => String(h).trim()).filter(h => h.length > 0);
+  }
+  if (headers.length === 0) {
+    headers = fallbackHeaders || (objects.length > 0 ? Object.keys(objects[0]) : []);
+    if (headers.length > 0) {
+      sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+      sheet.getRange(1, 1, 1, headers.length).setFontWeight("bold");
+      sheet.setFrozenRows(1);
+    }
+  }
+  if (headers.length === 0) return;
   const lastRow = sheet.getLastRow();
-  if (lastRow > 1) sheet.getRange(2, 1, lastRow - 1, lastCol).clearContent();
+  if (lastRow > 1) sheet.getRange(2, 1, lastRow - 1, headers.length).clearContent();
   if (!objects || objects.length === 0) return;
   const dataRows = objects.map(obj => headers.map(header => (obj[header] !== undefined && obj[header] !== null ? obj[header] : "")));
-  sheet.getRange(2, 1, dataRows.length, headers.length).setValues(dataRows);
+  if (dataRows.length > 0) sheet.getRange(2, 1, dataRows.length, headers.length).setValues(dataRows);
 }`
 
 export const CloudSyncModal: React.FC<CloudSyncModalProps> = ({
@@ -144,15 +265,21 @@ export const CloudSyncModal: React.FC<CloudSyncModalProps> = ({
   }
 
   const handlePullAndReview = async () => {
+    if (!endpointUrl.trim()) {
+      setSyncStatus('Please enter your Google Apps Script Web App URL first.')
+      return
+    }
+
     setIsPulling(true)
     setSyncStatus(null)
     const currentConfig: CloudSyncConfig = {
-      enabled,
+      enabled: true,
       provider,
-      endpointUrl,
-      apiKey,
-      workspaceId,
+      endpointUrl: endpointUrl.trim(),
+      apiKey: apiKey.trim(),
+      workspaceId: workspaceId.trim(),
     }
+    setEnabled(true)
 
     try {
       const res = await fetchRemoteSnapshot(currentConfig)
@@ -168,15 +295,22 @@ export const CloudSyncModal: React.FC<CloudSyncModalProps> = ({
   }
 
   const handleSyncNow = async () => {
+    if (!endpointUrl.trim()) {
+      setSyncStatus('Please enter your Google Apps Script Web App URL first.')
+      return
+    }
+
     setIsSyncing(true)
     setSyncStatus(null)
     const currentConfig: CloudSyncConfig = {
-      enabled,
+      enabled: true,
       provider,
-      endpointUrl,
-      apiKey,
-      workspaceId,
+      endpointUrl: endpointUrl.trim(),
+      apiKey: apiKey.trim(),
+      workspaceId: workspaceId.trim(),
     }
+    setEnabled(true)
+
     try {
       const res = await syncWorkspaceToCloud(appData, currentConfig)
       setSyncStatus(res.message)
@@ -187,14 +321,16 @@ export const CloudSyncModal: React.FC<CloudSyncModalProps> = ({
   }
 
   const handleSave = () => {
+    const isAutoEnabled = enabled || endpointUrl.trim().length > 0
     onSaveConfig({
-      enabled,
+      enabled: isAutoEnabled,
       provider,
       endpointUrl: endpointUrl.trim(),
       apiKey: apiKey.trim(),
       workspaceId: workspaceId.trim(),
       lastSynced: config.lastSynced,
     })
+    setEnabled(isAutoEnabled)
     onClose()
   }
 
@@ -362,7 +498,12 @@ export const CloudSyncModal: React.FC<CloudSyncModalProps> = ({
             <input
               type="url"
               value={endpointUrl}
-              onChange={(e) => setEndpointUrl(e.target.value)}
+              onChange={(e) => {
+                setEndpointUrl(e.target.value)
+                if (e.target.value.trim().length > 0 && !enabled) {
+                  setEnabled(true)
+                }
+              }}
               placeholder={
                 provider === 'google_sheets'
                   ? 'https://script.google.com/macros/s/AKfycb.../exec'

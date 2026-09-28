@@ -31,6 +31,7 @@ import {
   Globe,
   RefreshCw,
   X,
+  CalendarCheck,
 } from 'lucide-react'
 
 interface CalendarModuleProps {
@@ -80,6 +81,82 @@ export const CalendarModule: React.FC<CalendarModuleProps> = ({
   const [webCalError, setWebCalError] = useState<string | null>(null)
   const [webCalSuccess, setWebCalSuccess] = useState<string | null>(null)
   const [showConflictDetails, setShowConflictDetails] = useState(false)
+  const [isSyncingGCal, setIsSyncingGCal] = useState(false)
+  const [gcalMessage, setGcalMessage] = useState<string | null>(null)
+
+  // 2-Way Google Calendar Sync handler
+  const handleSyncGoogleCalendar = async () => {
+    let gasUrl = ''
+    try {
+      const savedData = localStorage.getItem('student_hub_app_data_v1')
+      if (savedData) {
+        const parsed = JSON.parse(savedData)
+        if (parsed.cloudSync?.endpointUrl && parsed.cloudSync?.endpointUrl.includes('script.google.com')) {
+          gasUrl = parsed.cloudSync.endpointUrl
+        }
+      }
+    } catch {
+      // ignore
+    }
+
+    if (!gasUrl) {
+      alert(
+        'Please connect your Google Apps Script Web App URL first in Cloud Sync (Header > Cloud Sync) to enable Google Calendar 2-Way sync!'
+      )
+      return
+    }
+
+    setIsSyncingGCal(true)
+    setGcalMessage(null)
+    try {
+      const syncUrl = `${gasUrl}${gasUrl.includes('?') ? '&' : '?'}syncGCal=true`
+      const res = await fetch(syncUrl)
+      if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`)
+      const json = await res.json()
+      if (json.success && json.data) {
+        if (json.data.gcalError) {
+          alert(`Google Calendar note: ${json.data.gcalError}\n\nPlease open Apps Script editor, select "testCalendarSync" function and click "Run" to authorize access.`)
+        }
+
+        const remoteEvents = (json.data.calendarEvents || []) as CalendarEvent[]
+        const scanned = (json.data.calendarsScanned || []) as string[]
+        const gcalCount = json.data.gcalCount ?? 0
+
+        // Reset course filter so downloaded events are not hidden
+        setSelectedCourseFilter('ALL')
+
+        const eventMap = new Map<string, CalendarEvent>()
+        calendarEvents.forEach((e) => {
+          const key = `${e.title.trim().toLowerCase()}_${e.startDate.slice(0, 16)}`
+          eventMap.set(key, e)
+        })
+
+        let addedCount = 0
+        remoteEvents.forEach((e) => {
+          const key = `${e.title.trim().toLowerCase()}_${e.startDate.slice(0, 16)}`
+          if (!eventMap.has(key)) {
+            eventMap.set(key, e)
+            addedCount++
+          }
+        })
+
+        const merged = Array.from(eventMap.values())
+        onUpdateCalendarEvents(merged)
+
+        const calSummary = scanned.length > 0 ? ` [${scanned.slice(0, 2).join(', ')}]` : ''
+        setGcalMessage(
+          `Google Calendar synced! Scanned ${scanned.length} calendars${calSummary}. Loaded ${gcalCount} events (+${addedCount} new).`
+        )
+        setTimeout(() => setGcalMessage(null), 6000)
+      } else {
+        throw new Error(json.error || 'Failed to fetch Google Calendar events')
+      }
+    } catch (err: any) {
+      alert(`Google Calendar sync error: ${err.message}. Ensure your script is deployed as Web App with "Who has access: Anyone".`)
+    } finally {
+      setIsSyncingGCal(false)
+    }
+  }
 
   // Filter events by course
   const filteredEvents = calendarEvents.filter((ev) => {
@@ -118,17 +195,43 @@ export const CalendarModule: React.FC<CalendarModuleProps> = ({
         // Direct fetch blocked by CORS; proceed to fallback proxy
       }
 
-      // Attempt 2: CORS proxy fallback
+      // Attempt 2: Multi-proxy CORS fallbacks
       if (!text) {
+        let gasUrl = ''
         try {
-          const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(fetchUrl)}`
-          const proxyRes = await fetch(proxyUrl)
-          if (proxyRes.ok) {
-            text = await proxyRes.text()
-            usedProxy = true
+          const savedData = localStorage.getItem('student_hub_app_data_v1')
+          if (savedData) {
+            const parsed = JSON.parse(savedData)
+            if (parsed.cloudSync?.endpointUrl && parsed.cloudSync?.endpointUrl.includes('script.google.com')) {
+              gasUrl = parsed.cloudSync.endpointUrl
+            }
           }
         } catch {
-          // Proxy also blocked or unreachable
+          // ignore
+        }
+
+        const proxies: ((u: string) => string)[] = [
+          ...(gasUrl ? [(u: string) => `${gasUrl}${gasUrl.includes('?') ? '&' : '?'}fetchFeed=${encodeURIComponent(u)}`] : []),
+          (u: string) => `https://corsproxy.io/?url=${encodeURIComponent(u)}`,
+          (u: string) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,
+          (u: string) => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
+        ]
+
+        for (const makeProxy of proxies) {
+          try {
+            const proxyUrl = makeProxy(fetchUrl)
+            const proxyRes = await fetch(proxyUrl)
+            if (proxyRes.ok) {
+              const candidate = await proxyRes.text()
+              if (candidate && candidate.includes('BEGIN:VCALENDAR')) {
+                text = candidate
+                usedProxy = true
+                break
+              }
+            }
+          } catch {
+            // Continue to next fallback
+          }
         }
       }
 
@@ -247,14 +350,36 @@ export const CalendarModule: React.FC<CalendarModuleProps> = ({
   }
 
   const handleSaveEvent = (data: Omit<CalendarEvent, 'id'> & { id?: string }) => {
+    let savedEvent: CalendarEvent
     if (data.id) {
-      onUpdateCalendarEvents(calendarEvents.map((ev) => (ev.id === data.id ? ({ ...data, id: ev.id } as CalendarEvent) : ev)))
+      savedEvent = { ...data, id: data.id } as CalendarEvent
+      onUpdateCalendarEvents(calendarEvents.map((ev) => (ev.id === data.id ? savedEvent : ev)))
     } else {
-      const newEv: CalendarEvent = {
+      savedEvent = {
         ...data,
         id: `cal-${Date.now()}`,
       }
-      onUpdateCalendarEvents([...calendarEvents, newEv])
+      onUpdateCalendarEvents([...calendarEvents, savedEvent])
+    }
+
+    // Auto-sync event to Google Calendar in background if Google Apps Script is connected
+    try {
+      const savedData = localStorage.getItem('student_hub_app_data_v1')
+      if (savedData) {
+        const parsed = JSON.parse(savedData)
+        if (parsed.cloudSync?.endpointUrl && parsed.cloudSync?.endpointUrl.includes('script.google.com')) {
+          fetch(parsed.cloudSync.endpointUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+            body: JSON.stringify({
+              calendarEvents: [savedEvent],
+              syncToGCal: true,
+            }),
+          }).catch(() => {})
+        }
+      }
+    } catch {
+      // ignore background sync errors
     }
   }
 
@@ -333,6 +458,16 @@ export const CalendarModule: React.FC<CalendarModuleProps> = ({
           </button>
 
           <button
+            onClick={handleSyncGoogleCalendar}
+            disabled={isSyncingGCal}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-[#5B8266]/40 hover:border-[#5B8266] bg-[#18261F] text-xs font-medium text-[#5B9975] hover:text-[#E0E6E4] transition-colors disabled:opacity-50"
+            title="2-Way Sync with Google Calendar"
+          >
+            <CalendarCheck className={`w-3.5 h-3.5 text-[#5B9975] ${isSyncingGCal ? 'animate-spin' : ''}`} />
+            <span>{isSyncingGCal ? 'Syncing...' : 'Sync Google Calendar'}</span>
+          </button>
+
+          <button
             onClick={() => {
               setSelectedDateForNewEvent(new Date())
               setEventToEdit(null)
@@ -345,6 +480,19 @@ export const CalendarModule: React.FC<CalendarModuleProps> = ({
           </button>
         </div>
       </div>
+
+      {/* Google Calendar Notification Banner */}
+      {gcalMessage && (
+        <div className="p-3 rounded-xl bg-[#18261F] border border-[#5B9975]/30 text-xs text-[#5B9975] flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <CalendarCheck className="w-4 h-4 text-[#5B9975] shrink-0" />
+            <span>{gcalMessage}</span>
+          </div>
+          <button onClick={() => setGcalMessage(null)} className="text-[#8C9E96] hover:text-[#E0E6E4]">
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
 
       {/* Workload Health & Conflict Warning Banner */}
       {totalWarnings > 0 && (
